@@ -4,74 +4,21 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy import signal
 
-import with_gravity as wg
+import kalman_filter as kf
+import add_times_to_data as atd
+
+# import with_gravity as wg
+
+from scipy import signal
 
 from scipy.ndimage import label
-
-def get_acceleration_times(acceleration_file, events_file):
-    """
-    Maps experiment times from acceleration data to actual system times
-    based on start/pause events.
-    
-    Args:
-        acceleration_file: Path to CSV file with acceleration data
-        events_file: Path to CSV file with start/pause events
-    
-    Returns:
-        DataFrame with acceleration data and corresponding system times
-    """
-    
-    # Read the data files
-    accel_df = pd.read_csv(acceleration_file)
-    events_df = pd.read_csv(events_file)
-    
-    # Convert system time to datetime objects
-    events_df['datetime'] = pd.to_datetime(events_df['system time text'])
-    
-    # Create a list to store the calculated times
-    calculated_times = []
-    
-    # Get start events and their corresponding system times
-    start_events = events_df[events_df['event'] == 'START'].copy()
-    start_events = start_events.sort_values('experiment time')
-    
-    for _, accel_row in accel_df.iterrows():
-        experiment_time = accel_row['Time (s)']
-        
-        # Find the most recent START event before or at this experiment time
-        valid_starts = start_events[start_events['experiment time'] <= experiment_time]
-        
-        if len(valid_starts) > 0:
-            # Get the most recent start event
-            latest_start = valid_starts.iloc[-1]
-            
-            # Calculate the offset from the start time
-            time_offset = experiment_time - latest_start['experiment time']
-            
-            # Add the offset to the system time of the start event
-            system_datetime = latest_start['datetime'] + timedelta(seconds=time_offset)
-            calculated_times.append(system_datetime)
-        else:
-            # If no start event found, use None or handle as needed
-            calculated_times.append(None)
-    
-    # Add the calculated times to the acceleration dataframe
-    result_df = accel_df.copy()
-    result_df['System Time'] = calculated_times
-    # result_df['System Time Text'] = [dt.strftime('%Y-%m-%d %H:%M:%S.%f UTC+02:00') if dt else None 
-    #                                 for dt in calculated_times]
-    
-    return result_df
-
-
-
 
 
 
 def remove_gravity_and_calculate_velocity(accel_df, 
                                         gravity_magnitude=9.81,
                                         initial_velocity=(0, 0, 0),
-                                        highpass_cutoff=0.391,
+                                        highpass_cutoff=0.05,
                                         sample_rate=99.4):
     """
     Calculate velocity with gravity removal and high-pass filtering to reduce drift.
@@ -87,6 +34,7 @@ def remove_gravity_and_calculate_velocity(accel_df,
     
     # Step 1: Estimate and remove gravity using stationary periods
 
+    # TODO: Remove whatever
     # Calculate the magnitude of acceleration
     df['accel_magnitude'] = np.sqrt(
         df['X (m/s^2)']**2 + df['Y (m/s^2)']**2 + df['Z (m/s^2)']**2
@@ -94,7 +42,7 @@ def remove_gravity_and_calculate_velocity(accel_df,
 
     # Find stationary periods: where acceleration changes very little for a window
     window_size = 100  # samples (adjust as needed)
-    std_threshold = 0.01  # m/s^2, adjust for your sensor noise
+    std_threshold = 0.1 # m/s^2, adjust for your sensor noise
 
     # Rolling standard deviation of acceleration magnitude
     df['accel_std'] = df['accel_magnitude'].rolling(window=window_size, center=True).std()
@@ -132,7 +80,6 @@ def remove_gravity_and_calculate_velocity(accel_df,
         gravity_y = df['Y (m/s^2)'].iloc[:initial_samples].mean()
         gravity_z = df['Z (m/s^2)'].iloc[:initial_samples].mean()
 
-    # Remove estimated gravity
     df['X_no_gravity'] = df['X (m/s^2)'] - gravity_x
     df['Y_no_gravity'] = df['Y (m/s^2)'] - gravity_y
     df['Z_no_gravity'] = df['Z (m/s^2)'] - gravity_z
@@ -142,27 +89,32 @@ def remove_gravity_and_calculate_velocity(accel_df,
     # print(f"Gravity magnitude: {np.sqrt(gravity_x**2 + gravity_y**2 + gravity_z**2):.2f} m/s²")
 
 
-    # # Step 2: Apply high-pass filter to remove low-frequency drift
-    # # Design butterworth high-pass filter
-    # nyquist = sample_rate / 2
-    # if highpass_cutoff < nyquist:
-    #     b, a = signal.butter(2, highpass_cutoff / nyquist, btype='high')
+    # Step 2: Apply high-pass filter to remove low-frequency drift
+    # Design butterworth high-pass filter
+    nyquist = sample_rate / 2
+    if highpass_cutoff < nyquist:
+        b, a = signal.butter(2, highpass_cutoff / nyquist, btype='high')
         
-    #     # Apply filter (with padding to reduce edge effects)
-    #     df['X_filtered'] = signal.filtfilt(b, a, df['X_no_gravity'])
-    #     df['Y_filtered'] = signal.filtfilt(b, a, df['Y_no_gravity'])
-    #     df['Z_filtered'] = signal.filtfilt(b, a, df['Z_no_gravity'])
-    # else:
-    #     # If cutoff is too high, just use gravity-removed data
-    #     df['X_filtered'] = df['X_no_gravity']
-    #     df['Y_filtered'] = df['Y_no_gravity']
-    #     df['Z_filtered'] = df['Z_no_gravity']
+        # Apply filter (with padding to reduce edge effects)
+        df['X_filtered'] = signal.filtfilt(b, a, df['X_no_gravity'])
+        df['Y_filtered'] = signal.filtfilt(b, a, df['Y_no_gravity'])
+        df['Z_filtered'] = signal.filtfilt(b, a, df['Z_no_gravity'])
+    else:
+        # If cutoff is too high, just use gravity-removed data
+        df['X_filtered'] = df['X_no_gravity']
+        df['Y_filtered'] = df['Y_no_gravity']
+        df['Z_filtered'] = df['Z_no_gravity']
     
+    # Apply Kalman filter to further reduce noise
+    df['X_filtered'] = kf.kalman_filter_1d(df['X_filtered'].values)
+    df['Y_filtered'] = kf.kalman_filter_1d(df['Y_filtered'].values)
+    df['Z_filtered'] = kf.kalman_filter_1d(df['Z_filtered'].values)
+
     # Step 3: Integrate filtered acceleration
     df['dt'] = df['Time (s)'].diff()
     if pd.isna(df['dt'].iloc[0]) and len(df) > 1:
         df.loc[0, 'dt'] = df['Time (s)'].iloc[1] - df['Time (s)'].iloc[0]
-    
+
     # Initialize velocity arrays
     vx = np.zeros(len(df))
     vy = np.zeros(len(df))
@@ -174,13 +126,14 @@ def remove_gravity_and_calculate_velocity(accel_df,
     for i in range(1, len(df)):
         dt = df['dt'].iloc[i]
         if i in stationary_indices:
-            vx[i] = 0
-            vy[i] = 0
-            vz[i] = 0
+            vx[i] = 0 + gravity_x
+            vy[i] = 0 + gravity_y
+            vz[i] = 0 + gravity_z
         else:
-            vx[i] = vx[i-1] + (df['X_no_gravity'].iloc[i] + df['X_no_gravity'].iloc[i-1]) / 2 * dt
-            vy[i] = vy[i-1] + (df['Y_no_gravity'].iloc[i] + df['Y_no_gravity'].iloc[i-1]) / 2 * dt
-            vz[i] = vz[i-1] + (df['Z_no_gravity'].iloc[i] + df['Z_no_gravity'].iloc[i-1]) / 2 * dt
+            vx[i] = vx[i-1] + (df['X_filtered'].iloc[i] + df['X_filtered'].iloc[i-1]) / 2 * dt
+            vy[i] = vy[i-1] + (df['Y_filtered'].iloc[i] + df['Y_filtered'].iloc[i-1]) / 2 * dt
+            vz[i] = vz[i-1] + (df['Z_filtered'].iloc[i] + df['Z_filtered'].iloc[i-1]) / 2 * dt
+
         # vx[i] = vx[i-1] + (df['X_filtered'].iloc[i] + df['X_filtered'].iloc[i-1]) / 2 * dt
         # vy[i] = vy[i-1] + (df['Y_filtered'].iloc[i] + df['Y_filtered'].iloc[i-1]) / 2 * dt
         # vz[i] = vz[i-1] + (df['Z_filtered'].iloc[i] + df['Z_filtered'].iloc[i-1]) / 2 * dt
@@ -199,10 +152,13 @@ def remove_gravity_and_calculate_velocity(accel_df,
     # print(f"Y mean diff: {df['Y_diff'].mean():.3f} m/s²") 
     # print(f"Z mean diff: {df['Z_diff'].mean():.3f} m/s²")
 
+
     # Velocity magnitude after filtering
     df['V_magnitude'] = np.sqrt(df['Vx (m/s)']**2 + df['Vy (m/s)']**2 + df['Vz (m/s)']**2)
 
     return df
+
+
 
 def analyze_drift(df):
     """
@@ -212,13 +168,20 @@ def analyze_drift(df):
     
     # Plot raw acceleration
     ax = axes[0]
-    ax.plot(df['Time (s)'], df['X (m/s^2)'], 'r-', alpha=0.5, label='X')
-    ax.plot(df['Time (s)'], df['Y (m/s^2)'], 'g-', alpha=0.5, label='Y')
-    ax.plot(df['Time (s)'], df['Z (m/s^2)'], 'b-', alpha=0.5, label='Z')
-    ax.set_ylabel('Raw Acceleration (m/s²)')
-    ax.set_title('Raw Accelerometer Data')
+    ax.plot(df['Time (s)'], df['X_filtered'], 'r-', alpha=0.5, label='X filtered')
+    ax.plot(df['Time (s)'], df['Y_filtered'], 'g-', alpha=0.5, label='Y filtered')
+    ax.plot(df['Time (s)'], df['Z_filtered'], 'b-', alpha=0.5, label='Z filtered')
+    ax.set_ylabel('Filtered Acceleration (m/s²)')
+    ax.set_title('High-pass Filtered Acceleration (Gravity Removed)')
     ax.legend()
     ax.grid(True, alpha=0.3)
+    # ax.plot(df['Time (s)'], df['X (m/s^2)'], 'r-', alpha=0.5, label='X')
+    # ax.plot(df['Time (s)'], df['Y (m/s^2)'], 'g-', alpha=0.5, label='Y')
+    # ax.plot(df['Time (s)'], df['Z (m/s^2)'], 'b-', alpha=0.5, label='Z')
+    # ax.set_ylabel('Raw Acceleration (m/s²)')
+    # ax.set_title('Raw Accelerometer Data')
+    # ax.legend()
+    # ax.grid(True, alpha=0.3)
     
     # Plot filtered acceleration
     if 'X_no_gravity' in df.columns:
@@ -230,6 +193,15 @@ def analyze_drift(df):
         ax.set_title('High-pass Filtered Acceleration (Gravity Removed)')
         ax.legend()
         ax.grid(True, alpha=0.3)
+    # if 'X_filtered' in df.columns:
+    #     ax = axes[1]
+    #     ax.plot(df['Time (s)'], df['X_filtered'], 'r-', alpha=0.5, label='X filtered')
+    #     ax.plot(df['Time (s)'], df['Y_filtered'], 'g-', alpha=0.5, label='Y filtered')
+    #     ax.plot(df['Time (s)'], df['Z_filtered'], 'b-', alpha=0.5, label='Z filtered')
+    #     ax.set_ylabel('Filtered Acceleration (m/s²)')
+    #     ax.set_title('High-pass Filtered Acceleration (Gravity Removed)')
+    #     ax.legend()
+    #     ax.grid(True, alpha=0.3)
     
     # Plot uncorrected velocity
     ax = axes[2]
@@ -256,10 +228,27 @@ def analyze_drift(df):
 
 # Example usage:
 if __name__ == "__main__":
-    # Replace with your actual file paths
-    acceleration_file = "acceleration_with_times.csv"
 
+    """ Uncomment to add system times and gyroscope data to acceleration data.
+    """
+    # Add paths to your files
+    acceleration_file = "data/Linear Acceleration.csv"
+    gyroscope_file = "data/Gyroscope.csv"
+    events_file = "data/meta/time.csv"
+
+    # Get acceleration data with system times
+    result = atd.get_acceleration_times_and_gyroscope_data(
+        acceleration_file, gyroscope_file, events_file
+    )
+
+    # If you want to save the result to a CSV file
+    result.to_csv("bike1.csv", index=False)
+    
+    # Replace with your actual file paths
+    acceleration_file = "bike1.csv"
     data = pd.read_csv(acceleration_file)
+
+
 
     # test = wg.calculate_velocity_from_acceleration(result)
     # wg.plot_velocity_and_acceleration(test)
@@ -275,5 +264,5 @@ if __name__ == "__main__":
     analyze_drift(df_filtered)
 
     # Save to a new CSV file
-    df_filtered.to_csv("clean_acceleration.csv", index=False)
-    print("\nResult saved to 'clean_acceleration.csv'")
+    # df_filtered.to_csv("clean_data/liu_bike1.csv", index=False)
+    print("\nResult saved to 'clean_data/liu_bike1.csv'")
