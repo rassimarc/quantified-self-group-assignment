@@ -1,19 +1,15 @@
 import pandas as pd
-from datetime import datetime, timedelta
-import matplotlib.pyplot as plt
 import numpy as np
 from scipy import signal
 
 import kalman_filter as kf
 import add_times_to_data as atd
-
-# import with_gravity as wg
+import plots
+from get_sampling_rate import calculate_sampling_frequency
 
 from scipy import signal
 
 from scipy.ndimage import label
-
-
 
 def remove_gravity_and_calculate_velocity(accel_df, 
                                         gravity_magnitude=9.81,
@@ -33,16 +29,14 @@ def remove_gravity_and_calculate_velocity(accel_df,
     df = accel_df.copy()
     
     # Step 1: Estimate and remove gravity using stationary periods
-
-    # TODO: Remove whatever
     # Calculate the magnitude of acceleration
     df['accel_magnitude'] = np.sqrt(
         df['X (m/s^2)']**2 + df['Y (m/s^2)']**2 + df['Z (m/s^2)']**2
     )
 
     # Find stationary periods: where acceleration changes very little for a window
-    window_size = 100  # samples (adjust as needed)
-    std_threshold = 0.1 # m/s^2, adjust for your sensor noise
+    window_size = 500  # samples (adjust as needed)
+    std_threshold = 0.2 # m/s^2, adjust for your sensor noise
 
     # Rolling standard deviation of acceleration magnitude
     df['accel_std'] = df['accel_magnitude'].rolling(window=window_size, center=True).std()
@@ -85,9 +79,8 @@ def remove_gravity_and_calculate_velocity(accel_df,
     df['Z_no_gravity'] = df['Z (m/s^2)'] - gravity_z
 
     # Print the time where gravity was estimated
-    # print(f"Estimated gravity at time {df['Time (s)'].iloc[0]}: {gravity_x:.2f} m/s², {gravity_y:.2f} m/s², {gravity_z:.2f} m/s²")
-    # print(f"Gravity magnitude: {np.sqrt(gravity_x**2 + gravity_y**2 + gravity_z**2):.2f} m/s²")
-
+    print(f"Estimated gravity at time {df['Time (s)'].iloc[0]}: {gravity_x:.2f} m/s², {gravity_y:.2f} m/s², {gravity_z:.2f} m/s²")
+    print(f"Gravity magnitude: {np.sqrt(gravity_x**2 + gravity_y**2 + gravity_z**2):.2f} m/s²")
 
     # Step 2: Apply high-pass filter to remove low-frequency drift
     # Design butterworth high-pass filter
@@ -126,105 +119,65 @@ def remove_gravity_and_calculate_velocity(accel_df,
     for i in range(1, len(df)):
         dt = df['dt'].iloc[i]
         if i in stationary_indices:
-            vx[i] = 0 + gravity_x
-            vy[i] = 0 + gravity_y
-            vz[i] = 0 + gravity_z
+            vx[i] = 0
+            vy[i] = 0
+            vz[i] = 0
         else:
             vx[i] = vx[i-1] + (df['X_filtered'].iloc[i] + df['X_filtered'].iloc[i-1]) / 2 * dt
             vy[i] = vy[i-1] + (df['Y_filtered'].iloc[i] + df['Y_filtered'].iloc[i-1]) / 2 * dt
             vz[i] = vz[i-1] + (df['Z_filtered'].iloc[i] + df['Z_filtered'].iloc[i-1]) / 2 * dt
-
-        # vx[i] = vx[i-1] + (df['X_filtered'].iloc[i] + df['X_filtered'].iloc[i-1]) / 2 * dt
-        # vy[i] = vy[i-1] + (df['Y_filtered'].iloc[i] + df['Y_filtered'].iloc[i-1]) / 2 * dt
-        # vz[i] = vz[i-1] + (df['Z_filtered'].iloc[i] + df['Z_filtered'].iloc[i-1]) / 2 * dt
     
     df['Vx (m/s)'] = vx
     df['Vy (m/s)'] = vy
     df['Vz (m/s)'] = vz
     df['V_magnitude (m/s)'] = np.sqrt(vx**2 + vy**2 + vz**2)
 
-    # # Add columns for the difference between filtered and unfiltered acceleration
-    # df['X_diff'] = df['X_no_gravity'] - df['X_filtered']  
-    # df['Y_diff'] = df['Y_no_gravity'] - df['Y_filtered']
-    # df['Z_diff'] = df['Z_no_gravity'] - df['Z_filtered']
-    # print("\nDifference between unfiltered and filtered acceleration:")
-    # print(f"X mean diff: {df['X_diff'].mean():.3f} m/s²")
-    # print(f"Y mean diff: {df['Y_diff'].mean():.3f} m/s²") 
-    # print(f"Z mean diff: {df['Z_diff'].mean():.3f} m/s²")
-
-
     # Velocity magnitude after filtering
     df['V_magnitude'] = np.sqrt(df['Vx (m/s)']**2 + df['Vy (m/s)']**2 + df['Vz (m/s)']**2)
 
     return df
 
-
-
-def analyze_drift(df):
+def clean_and_filter_gyroscope_data(gyro_df, sample_rate=99.4):
     """
-    Analyze and visualize drift in the velocity calculations.
+    Clean and filter gyroscope data using similar techniques as for acceleration.
+    
+    Args:
+        gyro_df: DataFrame with gyroscope data
+        sample_rate: Sampling rate (Hz)
+
+    Returns:
+        DataFrame with cleaned and filtered gyroscope data
     """
-    fig, axes = plt.subplots(4, 1, figsize=(12, 12))
-    
-    # Plot raw acceleration
-    ax = axes[0]
-    ax.plot(df['Time (s)'], df['X_filtered'], 'r-', alpha=0.5, label='X filtered')
-    ax.plot(df['Time (s)'], df['Y_filtered'], 'g-', alpha=0.5, label='Y filtered')
-    ax.plot(df['Time (s)'], df['Z_filtered'], 'b-', alpha=0.5, label='Z filtered')
-    ax.set_ylabel('Filtered Acceleration (m/s²)')
-    ax.set_title('High-pass Filtered Acceleration (Gravity Removed)')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    # ax.plot(df['Time (s)'], df['X (m/s^2)'], 'r-', alpha=0.5, label='X')
-    # ax.plot(df['Time (s)'], df['Y (m/s^2)'], 'g-', alpha=0.5, label='Y')
-    # ax.plot(df['Time (s)'], df['Z (m/s^2)'], 'b-', alpha=0.5, label='Z')
-    # ax.set_ylabel('Raw Acceleration (m/s²)')
-    # ax.set_title('Raw Accelerometer Data')
-    # ax.legend()
-    # ax.grid(True, alpha=0.3)
-    
-    # Plot filtered acceleration
-    if 'X_no_gravity' in df.columns:
-        ax = axes[1]
-        ax.plot(df['Time (s)'], df['X_no_gravity'], 'r-', alpha=0.5, label='X no_gravity')
-        ax.plot(df['Time (s)'], df['Y_no_gravity'], 'g-', alpha=0.5, label='Y no_gravity')
-        ax.plot(df['Time (s)'], df['Z_no_gravity'], 'b-', alpha=0.5, label='Z no_gravity')
-        ax.set_ylabel('Filtered Acceleration (m/s²)')
-        ax.set_title('High-pass Filtered Acceleration (Gravity Removed)')
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-    # if 'X_filtered' in df.columns:
-    #     ax = axes[1]
-    #     ax.plot(df['Time (s)'], df['X_filtered'], 'r-', alpha=0.5, label='X filtered')
-    #     ax.plot(df['Time (s)'], df['Y_filtered'], 'g-', alpha=0.5, label='Y filtered')
-    #     ax.plot(df['Time (s)'], df['Z_filtered'], 'b-', alpha=0.5, label='Z filtered')
-    #     ax.set_ylabel('Filtered Acceleration (m/s²)')
-    #     ax.set_title('High-pass Filtered Acceleration (Gravity Removed)')
-    #     ax.legend()
-    #     ax.grid(True, alpha=0.3)
-    
-    # Plot uncorrected velocity
-    ax = axes[2]
-    ax.plot(df['Time (s)'], df['Vx (m/s)'], 'r-', alpha=0.5, label='Vx')
-    ax.plot(df['Time (s)'], df['Vy (m/s)'], 'g-', alpha=0.5, label='Vy')
-    ax.plot(df['Time (s)'], df['Vz (m/s)'], 'b-', alpha=0.5, label='Vz')
-    ax.set_ylabel('Velocity (m/s)')
-    ax.set_title('Integrated Velocity (with drift)')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+    # Remove NaN values
+    gyro_df = gyro_df.dropna()
 
-    # Plot velocity magnitude
-    ax = axes[3]
-    ax.plot(df['Time (s)'], df['V_magnitude (m/s)'], 'purple', label='|V|', linewidth=2)
-    ax.set_ylabel('Velocity Magnitude (m/s)')
-    ax.set_xlabel('Time (s)')
-    ax.set_title('Velocity Magnitude (with drift)')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+    # Step 1: Apply high-pass filter to remove low-frequency drift
+    nyquist = sample_rate / 2
+    highpass_cutoff = 0.05  # High-pass filter cutoff frequency (Hz)
+    if highpass_cutoff < nyquist:
+        b, a = signal.butter(2, highpass_cutoff / nyquist, btype='high')
+        
+        # Apply filter (with padding to reduce edge effects)
+        gyro_df['X_gyro_filtered'] = signal.filtfilt(b, a, gyro_df['X_gyro (rad/s)'])
+        gyro_df['Y_gyro_filtered'] = signal.filtfilt(b, a, gyro_df['Y_gyro (rad/s)'])
+        gyro_df['Z_gyro_filtered'] = signal.filtfilt(b, a, gyro_df['Z_gyro (rad/s)'])
+    else:
+        # If cutoff is too high, just use raw gyroscope data
+        gyro_df['X_gyro_filtered'] = gyro_df['X_gyro (rad/s)']
+        gyro_df['Y_gyro_filtered'] = gyro_df['Y_gyro (rad/s)']
+        gyro_df['Z_gyro_filtered'] = gyro_df['Z_gyro (rad/s)']
 
-    plt.tight_layout()
-    plt.show()
+    # Step 2: Apply Kalman filter to further reduce noise
+    gyro_df['X_gyro_filtered'] = kf.kalman_filter_1d(gyro_df['X_gyro_filtered'].values)
+    gyro_df['Y_gyro_filtered'] = kf.kalman_filter_1d(gyro_df['Y_gyro_filtered'].values)
+    gyro_df['Z_gyro_filtered'] = kf.kalman_filter_1d(gyro_df['Z_gyro_filtered'].values)
 
+    # Step 3: Calculate angular velocity magnitude
+    gyro_df['gyro_magnitude'] = np.sqrt(
+        gyro_df['X_gyro_filtered']**2 + gyro_df['Y_gyro_filtered']**2 + gyro_df['Z_gyro_filtered']**2
+    )
+
+    return gyro_df
 
 # Example usage:
 if __name__ == "__main__":
@@ -242,27 +195,30 @@ if __name__ == "__main__":
     )
 
     # If you want to save the result to a CSV file
-    result.to_csv("bike1.csv", index=False)
+    # result.to_csv("bike1.csv", index=False)
     
-    # Replace with your actual file paths
-    acceleration_file = "bike1.csv"
-    data = pd.read_csv(acceleration_file)
+    # # Replace with your actual file paths
+    # acceleration_file = "bike1.csv"
+    # data = pd.read_csv(acceleration_file)
 
+    data = result
 
-
-    # test = wg.calculate_velocity_from_acceleration(result)
-    # wg.plot_velocity_and_acceleration(test)
-    
     # Display the result
     print("Acceleration data with corresponding system times:")
     print(data.head(10))
 
-    df_filtered = remove_gravity_and_calculate_velocity(data)
+    # Calculate sampling frequency
+    sampling_results = calculate_sampling_frequency(acceleration_file)
+    print(f"Sampling Frequency: {sampling_results['sampling_frequency_hz']:.2f} Hz")
+
+    df_filtered = remove_gravity_and_calculate_velocity(data, sample_rate=sampling_results['sampling_frequency_hz'])
+    df_filtered = clean_and_filter_gyroscope_data(df_filtered, sample_rate=sampling_results['sampling_frequency_hz'])
 
     print(f"Max velocity (uncorrected): {df_filtered['V_magnitude (m/s)'].max():.2f} m/s")
 
-    analyze_drift(df_filtered)
+    plots.plot_acceleration(df_filtered)
+    plots.plot_gyroscope(df_filtered)
 
     # Save to a new CSV file
-    # df_filtered.to_csv("clean_data/liu_bike1.csv", index=False)
-    print("\nResult saved to 'clean_data/liu_bike1.csv'")
+    df_filtered.to_csv("clean_data/walk/xiyan_walk7.csv", index=False)
+    print("\nResult saved to 'clean_data/walk/xiyan_walk2.csv'")

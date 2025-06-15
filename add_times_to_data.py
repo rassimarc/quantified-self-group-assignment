@@ -1,6 +1,7 @@
 import pandas as pd
 from datetime import timedelta
 import numpy as np
+from scipy import interpolate
 
 def get_acceleration_times_and_gyroscope_data(acceleration_file, gyroscope_file, events_file):
     """
@@ -55,61 +56,16 @@ def get_acceleration_times_and_gyroscope_data(acceleration_file, gyroscope_file,
     result_df = accel_df.copy()
     result_df['System Time'] = calculated_times
     
-    # result_df = merge_gyroscope_data_with_acceleration(result_df, gyro_df)
+    gyro_df.columns = ['Time (s)', 'X_gyro (rad/s)', 'Y_gyro (rad/s)', 'Z_gyro (rad/s)']
 
+    interp_x = interpolate.interp1d(gyro_df['Time (s)'], gyro_df['X_gyro (rad/s)'], 
+                                kind='linear', bounds_error=False, fill_value='extrapolate')
+    interp_y = interpolate.interp1d(gyro_df['Time (s)'], gyro_df['Y_gyro (rad/s)'], 
+                                kind='linear', bounds_error=False, fill_value='extrapolate')
+    interp_z = interpolate.interp1d(gyro_df['Time (s)'], gyro_df['Z_gyro (rad/s)'], 
+                                kind='linear', bounds_error=False, fill_value='extrapolate')
+    result_df['X_gyro (rad/s)'] = interp_x(result_df['Time (s)'])
+    result_df['Y_gyro (rad/s)'] = interp_y(result_df['Time (s)'])
+    result_df['Z_gyro (rad/s)'] = interp_z(result_df['Time (s)'])
+    
     return result_df
-
-def merge_gyroscope_data_with_acceleration(accel_df, gyro_df, time_tolerance=0.03):
-    """
-    Merges gyroscope data with acceleration data based on system time.
-    
-    Args:
-        accel_df: DataFrame with acceleration data and system times
-        gyro_df: DataFrame with gyroscope data
-
-    Returns:
-        Merged DataFrame with both acceleration and gyroscope data
-    """
-    merged_data = []
-
-    for _, gyro_row in gyro_df.iterrows():
-            gyro_time = gyro_row['Time (s)']
-            
-            # Find the closest accelerometer reading in time
-            time_diffs = np.abs(accel_df['Time (s)'] - gyro_time)
-            closest_idx = time_diffs.idxmin()
-            closest_time_diff = time_diffs.iloc[closest_idx]
-            
-            # Only merge if within tolerance
-            if closest_time_diff <= time_tolerance:
-                accel_row = accel_df.iloc[closest_idx]
-                
-                # Combine the data
-                merged_row = {
-                    'Time (s)': gyro_time,
-                    'Time_Difference': closest_time_diff,
-                    'X (rad/s)': gyro_row['X (rad/s)'],
-                    'Y (rad/s)': gyro_row['Y (rad/s)'],
-                    'Z (rad/s)': gyro_row['Z (rad/s)'],
-                    'X (m/s^2)': accel_row['X (m/s^2)'],
-                    'Y (m/s^2)': accel_row['Y (m/s^2)'],
-                    'Z (m/s^2)': accel_row['Z (m/s^2)'],
-                }
-                
-                # Add System Time if it exists
-                if 'System Time' in accel_df.columns:
-                    merged_row['System_Time'] = accel_row['System Time']
-                    
-                merged_data.append(merged_row)
-
-
-    # Create merged DataFrame
-    merged_df = pd.DataFrame(merged_data)
-
-    # Print largest time difference if any
-    # if not merged_df.empty:
-    max_time_diff = merged_df['Time_Difference'].max()
-        # if max_time_diff > time_tolerance:
-    print(f"Warning: Maximum time difference in merged data is {max_time_diff} seconds.")
-    
-    return merged_df
