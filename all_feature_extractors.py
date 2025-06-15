@@ -22,7 +22,7 @@ def extract_features(df, window_size=100, step_size=50):
         features['start_time'] = window['Time (s)'].iloc[0]
 
         # Acceleration statistical feature
-        for col in ['X (m/s^2)', 'Y (m/s^2)', 'Z (m/s^2)', 'accel_magnitude']:
+        for col in ['X_filtered', 'Y_filtered', 'Z_filtered', 'accel_magnitude']:
             features[f'{col}_mean'] = window[col].mean()
             features[f'{col}_std'] = window[col].std()
             features[f'{col}_min'] = window[col].min()
@@ -67,7 +67,7 @@ def extract_frequency_features(df, window_size=100, step_size=50, sampling_rate=
         features = {}
         features['start_time'] = window['Time (s)'].iloc[0]
 
-        for col in ['X (m/s^2)', 'Y (m/s^2)', 'Z (m/s^2)']:
+        for col in ['X_filtered', 'Y_filtered', 'Z_filtered']:
             signal_data = window[col].values
             fft_result = np.fft.rfft(signal_data)
             fft_magnitude = np.abs(fft_result)
